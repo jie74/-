@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>远程摄像头 - 电脑端查看</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; min-height: 100vh; background: #0a0b14; color: #e0e0e0; display: flex; flex-direction: column; }
+        .navbar { display: flex; align-items: center; justify-content: space-between; padding: 12px 24px; background: rgba(255,255,255,0.02); border-bottom: 1px solid rgba(255,255,255,0.06); backdrop-filter: blur(10px); z-index: 10; }
+        .navbar .brand { display: flex; align-items: center; gap: 10px; }
+        .navbar .brand h1 { font-size: 1rem; font-weight: 600; background: linear-gradient(90deg, #00c8ff, #7c5cff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .conn-status { display: flex; align-items: center; gap: 6px; font-size: 0.8rem; color: rgba(255,255,255,0.5); }
+        .conn-dot { width: 8px; height: 8px; border-radius: 50%; background: #555; }
+        .conn-dot.connected { background: #00e676; box-shadow: 0 0 8px rgba(0, 230, 118, 0.5); }
+        .fullscreen-btn { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: #e0e0e0; padding: 6px 14px; border-radius: 8px; font-size: 0.8rem; cursor: pointer; }
+        .main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 20px; position: relative; }
+        .video-wrapper { position: relative; max-width: 960px; width: 100%; aspect-ratio: 16/9; border-radius: 16px; overflow: hidden; background: #111; border: 1px solid rgba(255,255,255,0.06); }
+        .video-wrapper img { width: 100%; height: 100%; object-fit: contain; }
+        .waiting { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(10, 11, 20, 0.95); z-index: 5; }
+        .waiting.hidden { opacity: 0; visibility: hidden; }
+        .waiting .spinner { width: 60px; height: 60px; border: 3px solid rgba(255,255,255,0.1); border-top-color: #7c5cff; border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 24px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .footer { display: flex; align-items: center; justify-content: space-between; padding: 10px 24px; background: rgba(255,255,255,0.02); border-top: 1px solid rgba(255,255,255,0.06); font-size: 0.75rem; color: rgba(255,255,255,0.3); }
+        .stats { display: flex; gap: 20px; }
+        .live-badge { display: flex; align-items: center; gap: 6px; background: rgba(255, 82, 82, 0.9); padding: 4px 12px; border-radius: 20px; font-size: 0.75rem; font-weight: 600; }
+        .live-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: white; animation: blink 1s ease-in-out infinite; }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+    </style>
+</head>
+<body>
+    <nav class="navbar"><div class="brand"><span>🖥️</span><h1>远程摄像头 · 查看端</h1></div><div class="right"><div class="conn-status"><div class="conn-dot" id="connDot"></div><span id="connText">未连接</span></div><button class="fullscreen-btn" id="fullscreenBtn">⛶ 全屏</button></div></nav>
+    <div class="main"><div class="video-wrapper" id="videoWrapper"><img id="streamImage" src="" alt="视频流"><div class="waiting" id="waiting"><div class="spinner"></div><h2>等待摄像头连接</h2><p>请在手机上打开摄像头页面并开始推流</p></div><div class="video-overlay" style="position:absolute;bottom:0;left:0;right:0;padding:20px;background:linear-gradient(transparent,rgba(0,0,0,0.7));display:flex;justify-content:space-between;align-items:flex-end;opacity:0;transition:opacity 0.3s;"><div class="video-info"><div class="cam-name" id="camName">-</div><div class="cam-meta" id="camMeta">-</div></div><div class="live-badge" id="liveBadge" style="display:none;"><div class="dot"></div>LIVE</div></div></div></div>
+    <footer class="footer"><span>远程摄像头 v1.0</span><div class="stats"><div class="stat">📊 <span id="fpsDisplay">0 FPS</span></div><div class="stat">📦 <span id="sizeDisplay">0 KB/帧</span></div><div class="stat">⏱️ <span id="latencyDisplay">-- ms</span></div></div></footer>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+    <script>
+        const streamImage = document.getElementById('streamImage'), waiting = document.getElementById('waiting'), connDot = document.getElementById('connDot'), connText = document.getElementById('connText'), fullscreenBtn = document.getElementById('fullscreenBtn'), camName = document.getElementById('camName'), camMeta = document.getElementById('camMeta'), liveBadge = document.getElementById('liveBadge'), fpsDisplay = document.getElementById('fpsDisplay'), sizeDisplay = document.getElementById('sizeDisplay'), latencyDisplay = document.getElementById('latencyDisplay');
+        let frameCount = 0, lastFpsTime = Date.now(), receiving = false;
+        const socket = io(window.location.origin, { transports: ['websocket', 'polling'] });
+        socket.on('connect', () => { connDot.classList.add('connected'); connText.textContent = '已连接'; socket.emit('register_viewer'); });
+        socket.on('disconnect', () => { connDot.classList.remove('connected'); connText.textContent = '已断开'; receiving = false; waiting.classList.remove('hidden'); liveBadge.style.display = 'none'; });
+        socket.on('video_frame', (data) => {
+            if (!receiving) { receiving = true; waiting.classList.add('hidden'); liveBadge.style.display = 'flex'; }
+            streamImage.src = data.image;
+            const sizeKB = (data.image.length * 0.75 / 1024).toFixed(1);
+            sizeDisplay.textContent = sizeKB + ' KB/帧';
+            const latency = Date.now() - data.timestamp;
+            latencyDisplay.textContent = latency + ' ms';
+            frameCount++;
+            const now = Date.now();
+            if (now - lastFpsTime >= 1000) { fpsDisplay.textContent = frameCount + ' FPS'; frameCount = 0; lastFpsTime = now; }
+            camMeta.textContent = `延迟: ${latency}ms | ${sizeKB}KB/帧`;
+        });
+        fullscreenBtn.addEventListener('click', () => {
+            if (!document.fullscreenElement) { document.documentElement.requestFullscreen(); fullscreenBtn.textContent = '⛶ 退出全屏'; } 
+            else { document.exitFullscreen(); fullscreenBtn.textContent = '⛶ 全屏'; }
+        });
+    </script>
+</body>
+</html>
